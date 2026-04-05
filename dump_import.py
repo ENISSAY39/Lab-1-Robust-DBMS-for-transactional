@@ -94,6 +94,36 @@ def compare_dumps(files):
         print("Dumps differ in size -> NOT resilient!")
 
 
+def run_query(query, label):
+    start = time.time()
+
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-i",
+            CONTAINER_NAME,
+            "mariadb",
+            f"-u{DB_USER}",
+            f"-p{DB_PASSWORD}",
+            DB_NAME,
+            "-e",
+            query,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    elapsed = time.time() - start
+
+    if result.returncode != 0:
+        print(f"{label} FAILED: {result.stderr[:200]}")
+    else:
+        print(f"{label} : {elapsed:.2f}s")
+
+    return elapsed
+
+
 if __name__ == "__main__":
     exported_files = []
     timings = []
@@ -117,3 +147,50 @@ if __name__ == "__main__":
         print(f"Iteration {i} : import {t_imp:.2f}s | export {t_exp:.2f}s")
 
     compare_dumps(exported_files)
+
+    print("\n--- Consistency checks timing ---")
+
+    # SAME SEAT QUERY
+    run_query(
+        """
+    SELECT f.flight_id, r.seat, COUNT(*)
+    FROM Passenger p
+    JOIN Reserve r ON p.passenger_id = r.passenger_id
+    JOIN Booking b ON r.booking_id = b.booking_id
+    JOIN Flight f ON b.flight_id = f.flight_id
+    GROUP BY f.flight_id, r.seat
+    HAVING COUNT(*) > 1;
+    """,
+        "same seat query",
+    )
+
+    # OVERLAPPING FLIGHTS QUERY
+    run_query(
+        """
+    SELECT p.passenger_id
+    FROM Passenger p
+    JOIN Reserve r1 ON p.passenger_id = r1.passenger_id
+    JOIN Booking b1 ON r1.booking_id = b1.booking_id
+    JOIN Flight f1 ON b1.flight_id = f1.flight_id
+
+    JOIN Reserve r2 ON p.passenger_id = r2.passenger_id
+    JOIN Booking b2 ON r2.booking_id = b2.booking_id
+    JOIN Flight f2 ON b2.flight_id = f2.flight_id
+
+    WHERE f1.flight_id < f2.flight_id
+    AND f1.flight_day = f2.flight_day
+    AND ABS(f1.flight_hour - f2.flight_hour) < 2;
+    """,
+        "overlapping flights query",
+    )
+
+    # PASSENGER WITHOUT SEAT QUERY
+    run_query(
+        """
+    SELECT p.passenger_id
+    FROM Passenger p
+    LEFT JOIN Reserve r ON p.passenger_id = r.passenger_id
+    WHERE r.seat IS NULL;
+    """,
+        "passenger without seat query",
+    )
